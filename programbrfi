@@ -1,0 +1,862 @@
+# Import packages
+
+import requests
+import pandas as pd
+import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import json
+import re
+import csv
+from time import time, ctime
+from datetime import datetime as dt
+from datetime import timezone
+import dateutil.parser
+from tkinter import *
+from tkinter import messagebox
+from PIL import ImageTk, Image
+import matplotlib.patches as mpatches
+from pywaffle import Waffle
+
+# Layar utama
+root = Tk()
+root.title("Program BRFI Alpha")
+selected_teams = [] # Menyimpan dua tim
+selected_players_1 = [] # ID Pemain di klub 1
+selected_players_2 = [] # ID Pemain di klub 2
+capt1 = 0 # ID Capt 1
+capt2 = 0 # ID Capt 2
+isbrfi = True # File BRFI ada
+try:
+    brfi = pd.read_csv('BRFI_datatim.csv')
+except:
+    isbrfi = False
+    response = messagebox.askyesno("Peringatan", "File BRFI belum ada. Generate file BRFI?")
+    if response:
+        genbrfi()
+    else:
+        response2 = messagebox.showerror("Galat", "File BRFI belum ada. Pastikan file BRFI_datatim.csv ada di folder yang sama dengan Desktop BRFI")
+        if response2:
+            root.destroy()
+            
+# For manager history
+url_manager = [i for i in range(11)]
+r_p = [i for i in range(11)] # Sementara 3 saja
+json_p = [i for i in range(11)]
+manhist = [i for i in range(11)]
+
+# For hitung
+init = []
+preproc = [] # Contains raw, preprocessed data of User ID, points, and minus points
+preproc2 = [] # Same as preproc but for away team
+
+teamcomp = ['Home', 'Opp']
+
+# Time function for initialization
+
+def timefunc(par): # Returning an output according to request
+    timestat = '' # Time status initialization
+    curgw = 0 # Current Gameweek initialization
+    r = requests.get('https://fantasy.premierleague.com/api/fixtures/') # Get fixtures and schedules
+    json = r.json()
+
+    dfa = pd.DataFrame(json)
+
+    curlocal = ctime(time()) # Current time in local timezone
+    curutc = dt.now(timezone.utc) # Current time in UTC
+
+    count = 380 # Total games
+
+    # Accessing current index (Match ...th)
+    for i in dfa['finished']: 
+        if i == False: # Match not yet done
+            count -= 1
+    curgw = dfa['event'][count-1] # Current Gameweek 
+
+    dfc = dfa[dfa['event']==dfa['event'][count-1]] # Current gameweek has how many matches
+
+    countpro = 0 # Total games in current gameweek
+    matchdone = 0 # Proportion of updated game
+
+    # Updating total games done in current gameweek
+    for i in dfc['finished']:
+        if i == True:
+            countpro += 1
+
+    if countpro == len(dfc['event']): # All matches in that gameweek done, moving on to next gameweek
+        matchdone = 1
+        try:
+            kickutc = dateutil.parser.isoparse(dfa['kickoff_time'][count+1]) # Converting next GW deadline (count+1) to seconds
+        except IndexError:
+            timestat = 'safe' # All matches done, season finished
+        if abs(kickutc.timestamp() - curutc.timestamp()) < 6750: # Giving almost 2 hrs to break, user can't update anything
+            timestat = 'warning'
+        else:
+            timestat = 'safe'
+    else: # Matches not yet down, update proportion of matches done
+        matchdone = countpro/(len(dfc['event'])+1) # Plus one to give room to bench players, just estimation
+        
+    if par == 'timestat':
+        return timestat
+    else:
+        return [curgw, matchdone, curlocal]
+
+    
+# Layar Generate File BRFI
+def genbrfi():
+    genbrfi = Toplevel(root)
+    genbrfi.title("Generate File BRFI")
+    
+    def clicked():
+        response = messagebox.askokcancel("Konfirmasi", "ID Admin BRFI adalah " + str(Box_entri.get()))
+        if response:
+            editinit()
+            genbrfi.destroy()
+        else:
+            genbrfi()
+        
+    # Check file BRFI
+    try:
+        brfi = pd.read_csv('BRFI_datatim.csv')
+    except:
+        Label_entri = Label(genbrfi, text="Silakan masukkan ID Admin BRFI").pack()
+        global Box_entri
+        Box_entri = Entry(genbrfi)
+        Box_entri.pack()
+        Button_konfirmasi = Button(genbrfi,text="Konfirmasi",command=lambda: clicked())
+        Button_konfirmasi.pack()
+
+def editinit():
+    editinit = Toplevel(root)
+    editinit.title("Edit File BRFI")
+    
+    # Teams chosen
+    def clicked():
+        response = messagebox.askokcancel("Simpan File", "Simpan File?")
+        if response:
+            response2 = messagebox.showinfo("Konfirmasi", "File Disimpan")
+            in1 = [c[i].get() for i in range(len(list_id))]
+            nm1 = [Entry_Name[i].get() for i in range(len(list_id))]
+            brfi_list = [str(in1[i]) + ',' + str(list_id[i]) + ',' + str(nm1[i]) for i in range(len(list_id))]
+            print(brfi_list)
+            f = open("BRFI_datatim.csv", "w")
+            f.write("Tim,ID,Nama Lengkap\n")
+            for i in brfi_list:
+                f.write(str(i) + '\n')              
+            f.close()
+            editinit.destroy()
+
+    def destroying():
+        response = messagebox.askokcancel("Keluar", "Apakah Anda yakin akan keluar?")
+        if response:
+            editinit.destroy()
+            
+    if not isbrfi:
+        url_admin = 'https://fantasy.premierleague.com/api/entry/'+str(Box_entri.get())+'/'
+        r = requests.get(url_admin)
+        json = r.json()
+        try:
+            list_id = [json['leagues']['classic'][3+i]['id'] for i in range(len(json['leagues']['classic'])-3)]
+        except:
+            response = messagebox.showerror("Galat", "ID Tidak Ditemukan. Silakan periksa kembali.")
+            editinit.destroy()        
+            genbrfi.destroy()
+        list_name = [json['leagues']['classic'][3+i]['name'] for i in range(len(json['leagues']['classic'])-3)]
+    
+    else: # File BRFI ada
+        brfi = pd.read_csv('BRFI_datatim.csv')
+        list_id = [i for i in brfi["ID"]] # ID
+        list_name = [i for i in brfi["Nama Lengkap"]] # Nama Lengkap
+        
+    # Sambutan
+    Label_in1 = Label(editinit, text="Inisial").grid(row=0, column=0)
+    Label_id1 = Label(editinit, text="ID").grid(row=0, column=1)
+    Label_nl1 = Label(editinit, text="Nama Lengkap").grid(row=0, column=2)
+
+    Entry_Name = [i for i in range(20)] # Nama Lengkap
+    c = [i for i in range(20)] # Inisial
+
+    for i in range(len(list_id)):
+        c[i] = Entry(editinit, width=4)
+        Label_ID = Label(editinit, text = list_id[i])
+        Entry_Name[i] = Entry(editinit, width=40)
+
+        c[i].grid(row=i+1, column=0)
+        Label_ID.grid(row=i+1, column=1, sticky=E)        
+        Entry_Name[i].grid(row=i+1, column=2, sticky=W)
+        Entry_Name[i].insert(0, list_name[i])
+        
+        if isbrfi:
+            c[i].insert(0, brfi["Tim"][i])
+
+    Button_confirm = Button(editinit,text="Simpan Data",command=lambda: clicked())
+    Button_confirm.grid(row=len(list_id) + 1, column=0, padx=10, sticky=W)
+
+    Button_out = Button(editinit,text="Keluar",command=destroying)
+    Button_out.grid(row=len(list_id) + 1, column=2, padx=10, sticky=W)
+
+
+# Layar Ke-1: Pilih Klub
+
+def pilihklub():
+    pilihklub = Toplevel(root)
+    pilihklub.title("Pilih Klub")
+
+    # Check if file brfi is ready
+
+        
+    # Check if time is right
+    timestat = timefunc('timestat')
+    if timestat == 'warning':
+        response = messagebox.showerror("Galat", "Server sedang diupdate. Silakan akses kembali setelah pertandingan pertama selesai")
+        if response:
+            root.destroy()
+            
+    brfi = pd.read_csv('BRFI_datatim.csv')    
+    teams = [i for i in brfi["Nama Lengkap"]]
+    initials = [i for i in brfi["Tim"]]
+    team_id = [i for i in brfi["ID"]]
+    
+    # Sambutan
+    Label_Awal = Label(pilihklub, text="Silakan pilih dua klub").grid(row=0, column=0, columnspan=3)
+     
+    # Teams chosen
+    def clicked():
+        if len(selected_teams) != 2:
+            response = messagebox.showerror("Galat", "Silakan pilih dua klub")
+        else:
+            response = messagebox.askokcancel("Konfirmasi", "Apakah Anda yakin memilih " + selected_teams[0] + " VS " + selected_teams[1] + "?")
+            if response:
+                response2 = messagebox.showinfo("Konfirmasi", selected_teams[0] + " VS " + selected_teams[1] + " terpilih. Selanjutnya silakan pilih 11 pemain dari masing-masing klub.")
+                pilihtim()
+                pilihklub.destroy()
+            
+    def destroying():
+        response = messagebox.askokcancel("Keluar", "Apakah Anda yakin akan keluar?")
+        if response:
+            pilihklub.destroy()
+    
+    def appending(i): # Check if items in list
+        if i not in selected_teams:
+            selected_teams.append(i)
+            init.append(brfi.at[brfi[brfi['Nama Lengkap']==i].index.values[0], 'Tim'])
+        else:
+            selected_teams.remove(i)
+            init.remove(brfi.at[brfi[brfi['Nama Lengkap']==i].index.values[0], 'Tim'])
+        
+    c = [i for i in range(len(teams))]
+    for i in range(len(teams)):
+        c[i] = Checkbutton(pilihklub, text=initials[i], variable=teams[i],command=lambda i=teams[i]:appending(i))
+        c[i].grid(row=i+1, column=0, sticky=W)
+    
+    for i in range(len(brfi["Tim"])):
+
+        Label_ID = Label(pilihklub, text = brfi["ID"][i])
+        Label_Name = Label(pilihklub, text = brfi["Nama Lengkap"][i])
+
+        Label_ID.grid(row=i+1, column=1, sticky=E)
+        Label_Name.grid(row=i+1, column=2, sticky=W)
+        
+    Button_confirm = Button(pilihklub,text="Konfirmasi",command=lambda: clicked())
+    Button_confirm.grid(row=len(brfi["Tim"]) + 1, column=0, padx=10, sticky=W)
+
+    Button_out = Button(pilihklub,text="Keluar",command=destroying)
+    Button_out.grid(row=len(brfi["Tim"]) + 1, column=2, padx=10, sticky=W)
+
+def keluar_utama():
+    response = messagebox.askokcancel("Keluar", "Apakah Anda yakin akan keluar?")
+    if response:
+        response2 = messagebox.showinfo("Keluar", "Terima kasih sudah menggunakan program BRFI")
+        root.destroy()
+
+# Layar ke-5: Tampilkan Tabel dan Grafik
+
+def hitungcoba():
+    
+    hitungcoba = Toplevel(root)
+    hitungcoba.title("Tampilkan Data")
+    
+    lbltampil = Label(hitungcoba, text="Silakan pilih cara menampilkan data").pack()
+    dfcsv = pd.read_csv("sukapura.csv")    
+    
+    f = open("sp1.txt", "r")
+    line = f.readlines() 
+    f.close()
+    
+    f = open("sp2.txt", "r")
+    line2 = f.readlines() 
+    f.close()
+    
+    f = open("time.txt", "r")
+    timetable = f.readlines() 
+    f.close()
+    
+    curgw = int(timetable[0][:-1])
+    matchdone = float(timetable[1][:-1])
+    curlocal = timetable[2][:-1]
+    
+    def savetable():
+        fig, ax = plt.subplots()
+
+        # Hide axes
+        ax.axis('off')
+        ax.axis('tight')
+
+        # Create table and save it
+        table=ax.table(cellText=dfcsv.values, colLabels=dfcsv.columns, loc='center', \
+                       colWidths=[0.26, 0.08, 0.08, 0.08, 0.26, 0.08, 0.08, 0.08])
+
+        for i in range(8):
+            for j in range(2,13,2):
+                table.get_celld()[(j,i)].set_facecolor("#f2f2f2")
+            table.get_celld()[(0,i)].set_facecolor("#91e0ff")
+            table.get_celld()[(12,i)].set_facecolor("#3ded97")
+            
+        fig.text(
+        x=0.2,
+        y=0.2,
+        s="Waktu update: " + curlocal,
+        ha="left",
+        va="center",
+        rotation=0,
+        fontsize=10,
+        color='black',
+        )
+
+        table.auto_set_font_size(False)
+        table.set_fontsize(12)
+        fig.set_size_inches(12,8)
+        plt.savefig('sukapura.png')
+        plt.close();
+    
+    def disptable(): # Displaying table
+        global my_img, my_label, my_label2, my_label3
+        but_dis['state'] = NORMAL
+        but_wafel['state'] = NORMAL
+        but_table['state'] = DISABLED
+        my_img = ImageTk.PhotoImage(Image.open("./sukapura.png"))
+        my_label = Label(hitungcoba, image=my_img)
+        my_label.pack()
+    
+    def dispdispo(): # Displaying point distribution
+        global my_img2, my_label, my_label2, my_label3
+        but_dis['state'] = DISABLED
+        but_table['state'] = DISABLED
+        but_wafel['state'] = DISABLED
+        my_label.destroy()
+        my_img2 = ImageTk.PhotoImage(Image.open("./sukapura2.png"))
+        my_label2 = Label(hitungcoba, image=my_img2)
+        my_label2.pack()
+        
+    def dispwafel(): # Displaying quick count
+        global my_img3, my_label, my_label2, my_label3
+        but_dis['state'] = DISABLED
+        but_table['state'] = DISABLED
+        but_wafel['state'] = DISABLED
+        my_label.destroy()
+        my_img3 = ImageTk.PhotoImage(Image.open("./sukapura3.png"))
+        my_label3 = Label(hitungcoba, image=my_img3)
+        my_label3.pack()
+        
+    def dispoin(): # Saving point distribution
+        global my_img
+        dfg = dfcsv[['Total #0', 'Total #1']]
+        dfg = dfg.drop([11], axis=0)
+        dfg.loc[:,'New index'] = [i for i in range(10,-1,-1)]
+        dfg.set_index('New index', inplace=True)
+        fields = ['Total #0', 'Total #1']
+        dfg.loc[:,'G'] = dfg[fields].sum(axis=1)
+
+        for i in fields:
+            dfg['{}_Percent'.format(i)] = dfg[i] / dfg['G']
+        dfg = dfg.sort_values('Total #0_Percent')
+
+        fields = ['Total #0_Percent', 'Total #1_Percent']
+        labels = (line[0][-4:-1], line2[0][-4:-1])
+        title = 'Distribusi Poin FPL\n Gameweek ' + str(curgw)
+
+        def plot_stackedbar_p(df, labels, title):
+            # figure and axis
+            fig, ax = plt.subplots(1, figsize=(8, 6))
+
+            # plot bars
+            left = len(df) * [0]
+            for idx, name in enumerate(fields):
+                plt.barh(df.index, df[name], left = left)
+                left = left + df[name]
+            
+            # adding text
+            fig.text(
+            x=0.1,
+            y=0.05,
+            s="Waktu update: " + curlocal,
+            ha="left",
+            va="center",
+            rotation=0,
+            fontsize=10,
+            color='black',
+            )
+
+            # title
+            plt.title(title, loc='left')
+
+            # legend
+            plt.legend(labels, bbox_to_anchor=([0.58, 1, 0, 0]), ncol=4, frameon=False)
+
+            # remove spines
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+
+            # format x ticks
+            xticks = np.arange(0,1.1,0.1)
+            xlabels = ['{}%'.format(i) for i in np.arange(0,101,10)]
+            plt.xticks(xticks, xlabels)
+
+            # adjust limits and draw grid lines
+            plt.ylim(-0.5)
+            ax.xaxis.grid(color='gray', linestyle='dashed')
+            plt.yticks([])
+
+            ax.axvline(x=0.5, color='green', lw=3)
+            
+            plt.savefig('sukapura2.png')
+            plt.close();
+
+        plot_stackedbar_p(dfg, labels, title)
+        
+    def wafel():
+        legend_handles = []
+        m1 = dfcsv.loc[11,'Total #0']
+        m2 = dfcsv.loc[11,'Total #1']
+        m3 = (1-matchdone)/(matchdone)*(dfcsv.loc[11,'Total #0'] + dfcsv.loc[11,'Total #1'])
+        tot = m1+m2+m3
+        prop = np.round([m1, m2, m3]/tot*100, decimals=2)
+        
+        # Waffle Chart
+        if matchdone < 1:
+            values = {line[0][-4:-1]: prop[0], '': prop[2], line2[0][-4:-1]: prop[1]}
+            colors = ['blue', '#D3D3D3', 'red']
+            n0 = (50-prop[1])**2
+            n1 = (50-prop[0])**2
+            wprob0 = int(n0 / (n0 + n1) * 100)
+            wprob1 = 100-wprob0    
+
+        else:
+            values = {line[0][-4:-1]: prop[0], line2[0][-4:-1]: prop[1]}
+            colors = ['blue', 'red']
+
+        for j in enumerate([i for i in values.keys()]):
+            label_str = j[1] + ' (' + str(values[j[1]]) + '%)'
+            legend_handles.append(mpatches.Patch(label=label_str, color=colors[j[0]]))
+
+
+        fig = plt.figure(
+            FigureClass=Waffle,
+            rows=10,
+            columns=40,  # Either rows or columns could be omitted
+            values=values,
+            figsize=(15,5),
+            colors=colors
+        )
+
+        fig.text(
+        x=0.5,
+        y=0.5,
+        s="a"*220,
+        ha="center",
+        va="center",
+        rotation=90,
+        fontsize=2,
+        color='green',
+        alpha=0.3,
+        bbox={
+        'boxstyle': 'rarrow',
+        'lw': 3,
+        'ec': 'green',
+        'fc': (0.9, 0.9, 1, 0.5)}
+        )
+        
+        fig.text(
+        x=0.1,
+        y=0.05,
+        s="Waktu update: " + curlocal,
+        ha="left",
+        va="center",
+        rotation=0,
+        fontsize=10,
+        color='black',
+        )
+        
+        fig.text(
+        x=0.9,
+        y=0.05,
+        s="Gameweek " + str(curgw),
+        ha="right",
+        va="center",
+        rotation=0,
+        fontsize=10,
+        color='black',
+        )
+
+        # add legend to chart
+        plt.legend(
+            handles=legend_handles,
+            loc='lower center',
+            ncol = len(values),
+            bbox_to_anchor=(0., -0.2, 0.95, .1)
+        )
+
+        if matchdone < 1:
+            fig.text(
+            x=0.2,
+            y=0.9,
+            s=list(values.keys())[0] + ' ' + str(wprob0) + '%',
+            ha="center",
+            va="center",
+            rotation=0,
+            fontsize=20,
+            color='blue',
+            )
+
+            fig.text(
+            x=0,
+            y=0.9,
+            s="wprob",
+            ha="left",
+            va="center",
+            rotation=0,
+            fontsize=15,
+            color='black',
+            )
+
+            fig.text(
+            x=0.8,
+            y=0.9,
+            s=str(wprob1) + '% ' + list(values.keys())[2],
+            ha="center",
+            va="center",
+            rotation=0,
+            fontsize=20,
+            color='red',
+            )
+    
+        plt.savefig('sukapura3.png')
+        plt.close();
+    
+    savetable()
+    dispoin()
+    wafel()
+    
+    but_table = Button(hitungcoba, text="Tampilkan Tabel", command=disptable, width=20, state=DISABLED)
+    but_dis = Button(hitungcoba, text="Tampilkan Distribusi Skor", command=dispdispo, width=20)
+    but_wafel = Button(hitungcoba, text="Tampilkan Quick Count", command=dispwafel, width=20)
+    but_keluar = Button(hitungcoba, text="Keluar", command=hitungcoba.destroy, width=20)
+    
+    but_table.pack()
+    but_dis.pack()
+    but_wafel.pack()
+    but_keluar.pack()
+    
+    disptable()
+    
+    
+# Layar ke-4: Hitung-Hitung
+
+def hitung1():
+    hitung1 = Toplevel(root)
+    hitung1.title("Update Data")    
+    
+    f = open("sp1.txt", "r")
+    line = f.readlines() 
+    f.close()
+    
+    f = open("sp2.txt", "r")
+    line2 = f.readlines() 
+    f.close()
+    
+    # Time to determine status
+    timetable = timefunc('all')
+    
+    f = open("time.txt", "w")
+    for i in timetable:
+        f.write(str(i) + "\n")              
+    f.close()
+    
+    # Updating teams and current pts and save it to a table
+    url1 = 'https://fantasy.premierleague.com/api/leagues-classic/' + str(brfi[brfi["Nama Lengkap"] == str(line[0][:-5])]['ID'].tolist()[0]) + '/standings'
+    r_lg1 = requests.get(url1)
+    json_league = r_lg1.json()
+    current_results_df = pd.DataFrame(json_league['standings']['results'])[['entry', 'entry_name', 'event_total']]
+    current_results_df.to_csv("p1.csv", index=False)
+    
+    url2 = 'https://fantasy.premierleague.com/api/leagues-classic/' + str(brfi[brfi["Nama Lengkap"] == line2[0][:-5]]['ID'].tolist()[0]) + '/standings'
+    r_lg2 = requests.get(url2)
+    json_league2 = r_lg2.json()
+    current_results_df = pd.DataFrame(json_league2['standings']['results'])[['entry', 'entry_name', 'event_total']]
+    current_results_df.to_csv("p2.csv", index=False)
+    
+    # Load each players' current pts and minus pts stats
+    selected_players_1 = line[1].split()
+    for i in range(len(selected_players_1)):
+        url_manager[i] = 'https://fantasy.premierleague.com/api/entry/' + str(selected_players_1[i]) + '/history/'
+        r_p[i] = requests.get(url_manager[i])
+        json_p[i] = r_p[i].json()
+        manhist[i] = pd.DataFrame(json_p[i]['current'])
+        global preproc
+        preproc.append((selected_players_1[i], manhist[i]['points'].tolist()[-1], manhist[i]['event_transfers_cost'].tolist()[-1])) 
+    f = open("dat1.txt", "w")
+    for i in preproc:
+        f.write(str(i) + "\n")
+    f.close()
+    
+    selected_players_2 = line2[1].split()
+    for i in range(len(selected_players_2)):
+        url_manager[i] = 'https://fantasy.premierleague.com/api/entry/' + str(selected_players_2[i]) + '/history/'
+        r_p[i] = requests.get(url_manager[i])
+        json_p[i] = r_p[i].json()
+        manhist[i] = pd.DataFrame(json_p[i]['current'])
+        global preproc2
+        preproc2.append((selected_players_2[i], manhist[i]['points'].tolist()[-1], manhist[i]['event_transfers_cost'].tolist()[-1])) 
+    f = open("dat2.txt", "w")
+    for i in preproc2:
+        f.write(str(i) + "\n")              
+    f.close()
+    
+    f = open("dat1.txt", "r")
+    linedat = f.readlines() 
+    f.close()
+    
+    preproc = [re.split(r'\W+', linedat[i]) for i in range(len(linedat))]
+    teamlist1 = [int(re.split(r'\W+', linedat[i])[1]) for i in range(len(linedat))]
+    
+    f = open("dat2.txt", "r")
+    linedat2 = f.readlines() 
+    f.close()
+    
+    preproc2 = [re.split(r'\W+', linedat2[i]) for i in range(len(linedat2))]
+    teamlist2 = [int(preproc2[i][1]) for i in range(len(linedat2))]    
+    
+    def makedf(i):
+        current_results_df = pd.read_csv('p1.csv')
+        current_results_df2 = pd.read_csv('p2.csv')
+        if i == 0: # Home
+            return current_results_df
+        elif i == 1: # Opponent
+            return current_results_df2
+        else:
+            return current_results_df, current_results_df2
+    
+    def maketim(teamlist):
+        for i in (0, 1):
+            teamcomp[i] = makedf(i)
+            teamcomp[i] = teamcomp[i][teamcomp[i]['entry'].isin(teamlist[i])]
+        return teamcomp[0]
+    
+    def mindict(minlist):
+        aDict = {}
+        for i in range(len(minlist)):
+            if int(minlist[i][3]) != 0:
+                aDict[minlist[i][1]] = int(minlist[i][3])
+        return aDict       
+        
+    teamlist = (teamlist1, teamlist2)
+    teamcomp = ['Home', 'Opp']
+    
+    def minus_pts(teamdict, league_name):
+        league_name['Minus'] = 0
+        league_name['Total'] = league_name['event_total']
+        for i in teamdict.keys():
+            league_name.at[league_name[league_name['entry']==int(i)].index.values[0], 'Minus'] += teamdict[i]
+            league_name.at[league_name[league_name['entry']==int(i)].index.values[0], 'Total'] -= teamdict[i]
+        return league_name
+    
+    def capt(team_id, league_name):
+        league_name.at[league_name[league_name['entry']==team_id].index.values[0], 'event_total'] *= 2
+        league_name.at[league_name[league_name['entry']==team_id].index.values[0], 'Total'] *= 2
+        league_name.at[league_name[league_name['entry']==team_id].index.values[0], 'Minus'] *= 2
+        league_name.at[league_name[league_name['entry']==team_id].index.values[0], 'entry_name'] += ' (c)'
+        return league_name
+
+    def sort_update(league_name):
+        # league_name is a list containing home and opponent team
+        for i in (0, 1):
+            league_name[i].sort_values(by='Total', ascending=False, inplace=True)
+            league_name[i].rename(columns = {'entry_name': namatim[i], 'event_total': 'Poin'}, inplace=True)
+            league_name[i].set_index(namatim[i], inplace=True)
+            league_name[i].loc['Total'] = league_name[i].sum(numeric_only=True)
+            league_name[i].rename(columns = {'Total': 'Total #'+str(i)}, inplace=True)
+            league_name[i].drop('entry', inplace=True, axis=1)
+            league_name[i].reset_index(inplace=True)
+    
+    def return_result(league_name):
+        return league_name
+
+    namatim = [line[0][:-5], line2[0][:-5]]            
+    maketim(teamlist)
+    minus_pts(mindict(preproc), teamcomp[0])
+    capt(int(line[2]), teamcomp[0])
+    minus_pts(mindict(preproc2), teamcomp[1])
+    capt(int(line2[2]), teamcomp[1])
+    sort_update([teamcomp[0], teamcomp[1]])
+    dfcsv = pd.concat([return_result(teamcomp[0]), return_result(teamcomp[1])], axis=1)
+    dfcsv.to_csv('sukapura.csv', index=False)
+    
+    up_akhir = Label(hitung1, text="Update Selesai").pack()
+    btn_akhir = Button(hitung1, text="Lihat Skor", command=hitungcoba).pack()
+    
+# Home page
+myLabel = Label(root, text="Program Sederhana Quick Count BRFI versi Alpha").pack()
+Button_main = Button(root,text="Mulai Dari Awal (Pilih Tim)",command=pilihklub, width=25).pack()
+Button_edit = Button(root,text="Edit File BRFI",command=editinit, width=25).pack()
+Button_update = Button(root, text="Update Data (Mohon Tunggu)", command=hitung1, width=25).pack()
+Button_load = Button(root, text="Tampilkan Data Tanpa Update", command=hitungcoba, width=25).pack()
+Button_main_out = Button(root,text="Keluar",command=keluar_utama, width=25).pack()
+myLabel2 = Label(root, text="Created by Paul (himawanph@gmail.com) \n ©2022").pack()
+
+# Layar Ke-2: Pilih Pemain di Klub 1
+
+def pilihtim():
+    pilihtim = Toplevel(root)
+    pilihtim.title("Pilih Pemain")
+    
+    WelcomeLabel = Label(pilihtim, text=selected_teams[0])
+    WelcomeLabel.grid(row=0, column=0, columnspan=3)    
+    
+    Button_konfirmasi = Button(pilihtim, text="Konfirmasi", command=lambda: clicked())
+    Button_konfirmasi.grid(row=len(brfi["Tim"]) + 1, column=0, padx=10, sticky=W)
+    
+    Button_keluar = Button(pilihtim, text="Keluar", command=pilihtim.destroy)
+    Button_keluar.grid(row=len(brfi["Tim"]) + 1, column=2, padx=10, sticky=W)
+    
+    url1 = 'https://fantasy.premierleague.com/api/leagues-classic/' + str(brfi[brfi["Nama Lengkap"] == selected_teams[0]]['ID'].tolist()[0]) + '/standings'
+    r_lg1 = requests.get(url1)
+    json_league = r_lg1.json()
+
+    # Teams chosen
+    def clicked():
+        if len(selected_players_1) != 11:
+            response = messagebox.showerror("Galat", "Silakan pilih 11 pemain")
+        else:
+            response = messagebox.askokcancel("Konfirmasi", "Yakin dengan pilihan Anda?")
+            if response:
+                # Save to a file
+                global capt1
+                response2 = messagebox.showinfo("Konfirmasi", "Pilihan disimpan")
+                capt1 += int(current_results_df_id[current_results_df_name.index(dropclick.get())])
+                f = open("sp1.txt", "w")
+                f.write(str(selected_teams[0]) + "," + init[0] + "\n" + ' '.join(map(str, selected_players_1)) + "\n" + str(capt1))                
+                f.close()
+                current_results_df.to_csv("p1.csv", index=False)
+                pilihtim2()
+                pilihtim.destroy()
+    
+    def appending(i): # Check if items in list
+        if i not in selected_players_1:
+            selected_players_1.append(i)
+        else:
+            selected_players_1.remove(i)
+    
+    current_results_df = pd.DataFrame(json_league['standings']['results'])[['entry', 'entry_name', 'event_total']]
+    current_results_df_id = current_results_df['entry'].tolist()
+    current_results_df_name = current_results_df['entry_name'].tolist()
+    Label_Awal = Label(pilihtim, text="Silakan pilih 11 pemain")
+    for i in range(len(current_results_df_name)):
+        selected_players_1.append(current_results_df_id[i])
+    
+    c = [i for i in range(len(current_results_df_name))]
+
+    for i in range(len(current_results_df_name)):
+        c[i] = Checkbutton(pilihtim, text="", variable=current_results_df_id[i],command=lambda i=current_results_df_id[i]:appending(i))
+        c[i].select()
+        c[i].grid(row=i+1, column=0, sticky=W)
+        
+        Label_ID_1 = Label(pilihtim, text=current_results_df_id[i])
+        Label_ID_1.grid(row=i+1, column=1, sticky=E)
+        
+        Label_Klub_1 = Label(pilihtim, text=current_results_df_name[i])
+        Label_Klub_1.grid(row=i+1, column=2, sticky=W)
+        
+    # Dropdown Captain    
+    CaptLabel = Label(pilihtim, text="Pilih Kapten:")
+    CaptLabel.grid(row=len(current_results_df_name)+2, column=0, columnspan=2, sticky=E)
+    
+    dropclick = StringVar()
+    dropclick.set(current_results_df_name[0])
+    drop = OptionMenu(pilihtim, dropclick, *current_results_df_name)
+    drop.grid(row=len(current_results_df_name)+2, column=2, sticky=W)
+    
+# Layar Ke-3: Pilih Pemain di Klub 2
+
+def pilihtim2():
+    pilihtim2 = Toplevel(root)
+    pilihtim2.title("Pilih Pemain")
+    
+    WelcomeLabel = Label(pilihtim2, text=selected_teams[1])
+    WelcomeLabel.grid(row=0, column=0, columnspan=3)    
+    
+    Button_konfirmasi = Button(pilihtim2, text="Konfirmasi", command=lambda: clicked())
+    Button_konfirmasi.grid(row=len(brfi["Tim"]) + 1, column=0, padx=10, sticky=W)
+    
+    Button_keluar = Button(pilihtim2, text="Keluar", command=pilihtim2.destroy)
+    Button_keluar.grid(row=len(brfi["Tim"]) + 1, column=2, padx=10, sticky=W)
+    
+    url2 = 'https://fantasy.premierleague.com/api/leagues-classic/' + str(brfi[brfi["Nama Lengkap"] == selected_teams[1]]['ID'].tolist()[0]) + '/standings'
+    r_lg2 = requests.get(url2)
+    json_league2 = r_lg2.json()
+
+    # Teams chosen
+    def clicked():
+        if len(selected_players_2) != 11:
+            response = messagebox.showerror("Galat", "Silakan pilih 11 pemain")
+        else:
+            response = messagebox.askokcancel("Konfirmasi", "Yakin dengan pilihan Anda?")
+            if response:        
+                # Save to a file
+                global capt2
+                response2 = messagebox.showinfo("Konfirmasi", "Pilihan disimpan. Mohon menunggu beberapa saat untuk proses update")
+                capt2 += int(current_results_df_id[current_results_df_name.index(dropclick.get())])
+                f = open("sp2.txt", "w")
+                f.write(str(selected_teams[1]) + "," + init[1] + "\n" + ' '.join(map(str, selected_players_2)) + "\n" + str(capt2))
+                f.close()
+                current_results_df.to_csv("p2.csv", index=False)
+                hitung1()          
+                pilihtim2.destroy()
+    
+    def appending(i): # Check if items in list
+        if i not in selected_players_2:
+            selected_players_2.append(i)
+        else:
+            selected_players_2.remove(i)
+    
+    current_results_df = pd.DataFrame(json_league2['standings']['results'])[['entry', 'entry_name', 'event_total']]
+    current_results_df_id = current_results_df['entry'].tolist()
+    current_results_df_name = current_results_df['entry_name'].tolist()
+    Label_Awal = Label(pilihtim2, text="Silakan pilih 11 pemain")
+    for i in range(len(current_results_df_name)):
+        selected_players_2.append(current_results_df_id[i])
+    
+    c = [i for i in range(len(current_results_df_name))]
+
+    for i in range(len(current_results_df_name)):
+        c[i] = Checkbutton(pilihtim2, text="", variable=current_results_df_id[i],command=lambda i=current_results_df_id[i]:appending(i))
+        c[i].select()
+        c[i].grid(row=i+1, column=0, sticky=W)
+        
+        Label_ID_1 = Label(pilihtim2, text=current_results_df_id[i])
+        Label_ID_1.grid(row=i+1, column=1, sticky=E)
+        
+        Label_Klub_1 = Label(pilihtim2, text=current_results_df_name[i])
+        Label_Klub_1.grid(row=i+1, column=2, sticky=W)
+        
+    # Dropdown Captain    
+    CaptLabel = Label(pilihtim2, text="Pilih Kapten:")
+    CaptLabel.grid(row=len(current_results_df_name)+2, column=0, columnspan=2, sticky=E)
+    
+    dropclick = StringVar()
+    dropclick.set(current_results_df_name[0])
+    drop = OptionMenu(pilihtim2, dropclick, *current_results_df_name)
+    drop.grid(row=len(current_results_df_name)+2, column=2, sticky=W)
+    
+root.mainloop()
